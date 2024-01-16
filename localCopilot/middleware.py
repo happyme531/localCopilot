@@ -10,6 +10,7 @@ More functionality should be added later such as keep track of context of multip
 
 """
 
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
@@ -35,15 +36,31 @@ def get_copilot_token():
         content=content
     )
 
+MODEL_DEFAULT = ""
+MAX_GENERATE_TOKENS_DEFAULT = None
+MAX_PROMPT_WORDS_DEFAULT = 4000
+
+GENERATION_PARAMS_OVERRIDE = None
 
 @app.post("/v1/engines/codegen/completions")
 async def code_completion(body: dict):
-    body["n"] = 1
-    # if "max_tokens" in body:
-    #     del body["max_tokens"]
+    global MODEL_DEFAULT
+    if MODEL_DEFAULT != "":
+        body["model"] = MODEL_DEFAULT
+    global MAX_GENERATE_TOKENS_DEFAULT
+    if MAX_GENERATE_TOKENS_DEFAULT is not None:
+        body["max_tokens"] = MAX_GENERATE_TOKENS_DEFAULT
+    global MAX_PROMPT_WORDS_DEFAULT
+    if MAX_PROMPT_WORDS_DEFAULT is not None:
+        body["prompt"] = body["prompt"][-MAX_PROMPT_WORDS_DEFAULT:]
+    global GENERATION_PARAMS_OVERRIDE
+    if GENERATION_PARAMS_OVERRIDE is not None:
+        body.update(GENERATION_PARAMS_OVERRIDE)
 
-    # FIXME: this is just a hardcoded number, but this should actually use the tokenizer to truncate
-    body["prompt"] = body["prompt"][-4000:]
+    # VLLM: suffix is not supported
+    if "suffix" in body:
+        del body["suffix"]
+    
     print("making request. body:", {k: v for k, v in body.items() if k != "prompt"})
 
     global BACKEND_URI
@@ -56,7 +73,6 @@ async def code_completion(body: dict):
         async def stream_content():
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    body["n"] = 1
                     async with client.stream(
                         "POST",
                         f"{BACKEND_URI}/v1/completions",
@@ -98,11 +114,27 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--backend", type=str, default="http://localhost:5000")
+    global MODEL_DEFAULT
+    parser.add_argument("--model", type=str, default=MODEL_DEFAULT)
+    global MAX_GENERATE_TOKENS_DEFAULT
+    parser.add_argument("--max-generate-tokens", type=int, default=MAX_GENERATE_TOKENS_DEFAULT)
+    global MAX_PROMPT_WORDS_DEFAULT
+    parser.add_argument("--max-prompt-words", type=int, default=MAX_PROMPT_WORDS_DEFAULT)
+    parser.add_argument("--generation-params-override", type=str)
+    
     args = parser.parse_args()
     
     
     global BACKEND_URI
     BACKEND_URI = args.backend
+    MODEL_DEFAULT = args.model
+    MAX_GENERATE_TOKENS_DEFAULT = args.max_generate_tokens
+    MAX_PROMPT_WORDS_DEFAULT = args.max_prompt_words
+    # parse JSON string into dict
+    global GENERATION_PARAMS_OVERRIDE
+    if args.generation_params_override is not None:
+        GENERATION_PARAMS_OVERRIDE = json.loads(args.generation_params_override)
+        print("Using generation params override:", GENERATION_PARAMS_OVERRIDE)
 
     uvicorn.run(app, host=args.host, port=args.port)
 
